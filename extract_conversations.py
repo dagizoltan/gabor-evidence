@@ -4,6 +4,43 @@ from PIL import Image
 import pandas as pd
 import exifread
 import re
+from datetime import datetime
+
+def parse_to_iso_date(date_str, year="2026"):
+    """Converts various date strings to YYYY-MM-DD."""
+    if not date_str:
+        return None
+
+    months = {
+        'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04', 'may': '05', 'jun': '06',
+        'jul': '07', 'aug': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12'
+    }
+
+    # Already ISO
+    iso_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', date_str)
+    if iso_match:
+        return iso_match.group(0)
+
+    # Try "May 13, 2026"
+    m_year = re.search(r'([A-Za-z]{3,})\s+(\d{1,2}),?\s+(\d{4})', date_str)
+    if m_year:
+        m_name = m_year.group(1)[:3].lower()
+        if m_name in months:
+            return f"{m_year.group(3)}-{months[m_name]}-{m_year.group(2).zfill(2)}"
+
+    # Try "4 May" or "Mon, 4 May"
+    m_day = re.search(r'(\d{1,2})\s+([A-Za-z]{3,})', date_str)
+    if m_day:
+        m_name = m_day.group(2)[:3].lower()
+        if m_name in months and m_name not in ['min', 'sec']:
+            day = m_day.group(1).zfill(2)
+            if int(day) <= 31:
+                return f"{year}-{months[m_name]}-{day}"
+
+    if "may" in date_str.lower():
+        return f"{year}-05-01"
+
+    return None
 
 def get_exif_date(filepath):
     try:
@@ -141,7 +178,9 @@ def process_image(filepath, platform):
     if processed_messages:
         curr = processed_messages[0]
         for next_msg in processed_messages[1:]:
-            if next_msg['sender'] == curr['sender'] and (next_msg['top'] - curr['top'] < 70) and curr['sender'] != "System":
+            # Consolidation logic: same sender and close vertical distance
+            # For System messages, we don't consolidate unless they are very close (multi-line blocks)
+            if next_msg['sender'] == curr['sender'] and (next_msg['top'] - curr['top'] < 60):
                 curr['text'] += " " + next_msg['text']
                 curr['top'] = next_msg['top']
             else:
@@ -202,10 +241,37 @@ def main():
                 text = m['text'].strip()
                 if not text: continue
 
+                # More robust timestamp extraction: only if at the end of the string
+                # matches patterns like "13:29", "13:29 W", "13:29 J", "13:29 W/", "13:29 SW"
+                time_match = re.search(r'(\d{1,2}:\d{2})(\s*[A-Z/|~]{1,3})?$', text)
+                msg_time = time_match.group(1) if time_match else ""
+
+                # Clean up text by removing the trailing timestamp if found
+                display_text = text
+                if time_match:
+                    display_text = text[:time_match.start()].strip()
+
+                if not display_text and msg_time:
+                    display_text = "[Timestamp only]"
+
                 if m['sender'] == "System":
                     out.write(f"> *[{text}]*\n")
                 else:
-                    out.write(f"* **{m['sender']}**: {text}\n")
+                    # Format: YYYY-MM-DD HH:MM - sender - message
+                    iso_date = parse_to_iso_date(res['date']) or "2026-05-01"
+
+                    # Ensure HH:MM format
+                    formatted_time = "00:00"
+                    if msg_time:
+                        try:
+                            t_parts = msg_time.split(':')
+                            h, m_val = int(t_parts[0]), int(t_parts[1])
+                            if 0 <= h < 24 and 0 <= m_val < 60:
+                                formatted_time = f"{str(h).zfill(2)}:{str(m_val).zfill(2)}"
+                        except:
+                            pass
+
+                    out.write(f"* {iso_date} {formatted_time} - {m['sender']} - {display_text}\n")
             out.write("\n---\n\n")
 
     print(f"Extraction complete. Results saved to court_evidence.md")

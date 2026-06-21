@@ -141,7 +141,9 @@ def process_image(filepath, platform):
     if processed_messages:
         curr = processed_messages[0]
         for next_msg in processed_messages[1:]:
-            if next_msg['sender'] == curr['sender'] and (next_msg['top'] - curr['top'] < 70) and curr['sender'] != "System":
+            # Consolidation logic: same sender and close vertical distance
+            # For System messages, we don't consolidate unless they are very close (multi-line blocks)
+            if next_msg['sender'] == curr['sender'] and (next_msg['top'] - curr['top'] < 60):
                 curr['text'] += " " + next_msg['text']
                 curr['top'] = next_msg['top']
             else:
@@ -202,10 +204,37 @@ def main():
                 text = m['text'].strip()
                 if not text: continue
 
+                # More robust timestamp extraction: only if at the end of the string
+                # matches patterns like "13:29", "13:29 W", "13:29 J", "13:29 W/", "13:29 SW"
+                time_match = re.search(r'(\d{1,2}:\d{2})(\s*[A-Z/|~]{1,3})?$', text)
+                msg_time = time_match.group(1) if time_match else ""
+
+                # Clean up text by removing the trailing timestamp if found
+                display_text = text
+                if time_match:
+                    display_text = text[:time_match.start()].strip()
+
+                if not display_text and msg_time:
+                    display_text = "[Timestamp only]"
+
                 if m['sender'] == "System":
                     out.write(f"> *[{text}]*\n")
                 else:
-                    out.write(f"* **{m['sender']}**: {text}\n")
+                    # Format: datetime - sender - message
+                    # res['date'] might be "2026-06-16 21:39:10" or "Wed, 20 May" or "Unknown Date"
+                    base_date = res['date']
+                    # Try to extract just the date part if it has time
+                    if " " in base_date and ":" in base_date:
+                        date_parts = base_date.split(' ')
+                        # Check if first part looks like YYYY-MM-DD
+                        if re.match(r'\d{4}-\d{2}-\d{2}', date_parts[0]):
+                             base_date = date_parts[0]
+
+                    timestamp = base_date
+                    if msg_time:
+                        timestamp = f"{base_date} {msg_time}"
+
+                    out.write(f"* {timestamp} - {m['sender']} - {display_text}\n")
             out.write("\n---\n\n")
 
     print(f"Extraction complete. Results saved to court_evidence.md")
